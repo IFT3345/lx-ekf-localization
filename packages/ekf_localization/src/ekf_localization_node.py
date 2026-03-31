@@ -56,6 +56,7 @@ class EKFLocalizationNode(DTROS):
         self.gt_pose = None
         self.latest_img = None
 
+
         # Init the parameters
         self.resetParameters()
 
@@ -101,9 +102,9 @@ class EKFLocalizationNode(DTROS):
 
         self.apriltag_detector = Detector(
             families="tag36h11",
-            nthreads=1,
-            quad_decimate=2.0,
-            quad_sigma=0.0,
+            nthreads=4,
+            quad_decimate=1.0,
+            quad_sigma=0.8,
             refine_edges=1,
             decode_sharpening=0.25
         )
@@ -175,6 +176,8 @@ class EKFLocalizationNode(DTROS):
         # when the encoder data arrives
         rospy.Timer(rospy.Duration(1.0/10.0), self.doPredict)
 
+        rospy.Timer(rospy.Duration(1.0/2.0), self.doUpdate)
+
 
         self.loginfo("Initialized!")
 
@@ -232,6 +235,8 @@ class EKFLocalizationNode(DTROS):
 
     def doPredict(self, event=None):
 
+        if self.no_predict:
+            return
 
         if self.delta_phi_right == 0 and self.delta_phi_left ==0:
             # we haven't moved no need to predict
@@ -251,7 +256,6 @@ class EKFLocalizationNode(DTROS):
                 self.ekf.predict(dX, dT)
                 self.delta_phi_left = 0
                 self.delta_phi_right = 0
-                self.doUpdate()
 
 
     def cb_info(self, msg):
@@ -279,14 +283,10 @@ class EKFLocalizationNode(DTROS):
     def cb_image(self, image_msg):
         self.latest_img = image_msg
 
-    def doUpdate(self):
 
-        """
+    def doUpdate(self, event=None):
 
-        Args:
-            image_msg (:obj:`sensor_msgs.msg.CompressedImage`): The received image message
 
-        """
         if self.no_update:
             return
 
@@ -317,12 +317,15 @@ class EKFLocalizationNode(DTROS):
         tag_size = 0.065
         
         # Detect AprilTags with pose estimation
-        detections = self.apriltag_detector.detect(
-            image_gray,
-            estimate_tag_pose=True,
-            camera_params=camera_params,
-            tag_size=tag_size
-        )
+        try:
+            detections = self.apriltag_detector.detect(
+                image_gray,
+                estimate_tag_pose=True,
+                camera_params=camera_params,
+                tag_size=tag_size
+            )
+        except Exception as e:
+            print(e) 
         
         # Process each detection
         for detection in detections:
@@ -336,16 +339,6 @@ class EKFLocalizationNode(DTROS):
             tag_position = self.map[tag_id]
             tag_x, tag_y = tag_position[0], tag_position[1]
 
-            # let's calculate the exact range and bearing using the GT pose and
-            # tag location
-            if self.gt_pose is None:
-                return
-            dx = tag_x - self.gt_pose[0]
-            dy = tag_y - self.gt_pose[1]
-            sim_range_estimate = np.linalg.norm([dx, dy])
-            sim_bearing = np.arctan2(dy, dx) - self.gt_pose[2]
-            sim_bearing = wrap_angle(sim_bearing)
-
             # Get pose from detection (translation vector in camera frame)
             # pose_t is a 3x1 matrix: [x, y, z] where z is forward, x is right, y is down
             t = detection.pose_t
@@ -358,8 +351,19 @@ class EKFLocalizationNode(DTROS):
             # arctan2(x, z) gives the angle from camera's forward direction
             bearing = -np.arctan2(t[0, 0], t[2, 0])
             bearing=wrap_angle(bearing)
-
+            
             if self.sim:
+                if self.gt_pose is None:
+                    return
+                # let's calculate the exact range and bearing using the GT pose and
+                # tag location
+            
+                dx = tag_x - self.gt_pose[0]
+                dy = tag_y - self.gt_pose[1]
+                sim_range_estimate = np.linalg.norm([dx, dy])
+                sim_bearing = np.arctan2(dy, dx) - self.gt_pose[2]
+                sim_bearing = wrap_angle(sim_bearing)
+
                 range_estimate = sim_range_estimate
                 bearing = sim_bearing
 
